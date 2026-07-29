@@ -46,7 +46,7 @@ dependencies {
 }
 
 group = 'com.killstolevel'
-version = '0.0.1'
+version = '1.0'
 
 // The client's own checkstyle config, so this plugin reads like client code. The hub swaps this
 // build file for its own template when packaging, so checkstyle runs here and in CI only — it can

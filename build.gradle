@@ -1,5 +1,6 @@
 plugins {
 	id 'java'
+	id 'checkstyle'
 }
 
 repositories {
@@ -46,6 +47,14 @@ dependencies {
 
 group = 'com.killstolevel'
 version = '0.0.1'
+
+// The client's own checkstyle config, so this plugin reads like client code. The hub swaps this
+// build file for its own template when packaging, so checkstyle runs here and in CI only — it can
+// never break the hub's build, and adds no dependency for the hub to vet.
+checkstyle {
+	toolVersion = '10.21.4'
+	configDirectory = file('config/checkstyle')
+}
 
 tasks.withType(JavaCompile).configureEach {
 	options.encoding = 'UTF-8'

@@ -1,0 +1,101 @@
+plugins {
+	id 'java'
+}
+
+repositories {
+	maven {
+		url = 'https://repo.runelite.net'
+		content {
+			includeGroupByRegex("net\\.runelite.*")
+		}
+	}
+	mavenCentral()
+}
+
+def runeLiteVersion = 'latest.release'
+
+// Tests needing a mocking framework live in src/pluginTest rather than src/test. The plugin hub
+// replaces this build file when packaging a `standard` plugin, and its template declares only
+// junit for tests — so a mockito import under src/test would break the hub's build. The template
+// knows nothing about this source set, so it is simply not compiled there. Our own build runs it.
+sourceSets {
+	pluginTest {
+		java.srcDir 'src/pluginTest/java'
+		compileClasspath += sourceSets.main.output + sourceSets.test.compileClasspath
+		runtimeClasspath += output + sourceSets.main.output + sourceSets.test.runtimeClasspath
+	}
+}
+
+configurations {
+	pluginTestImplementation.extendsFrom testImplementation
+	pluginTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+dependencies {
+	compileOnly group: 'net.runelite', name: 'client', version: runeLiteVersion
+	compileOnly 'org.projectlombok:lombok:1.18.30'
+	annotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+	testImplementation group: 'net.runelite', name: 'client', version: runeLiteVersion
+	testImplementation group: 'net.runelite', name: 'jshell', version: runeLiteVersion
+	testImplementation 'junit:junit:4.13.2'
+	pluginTestImplementation 'org.mockito:mockito-core:5.14.2'
+	testCompileOnly 'org.projectlombok:lombok:1.18.30'
+	testAnnotationProcessor 'org.projectlombok:lombok:1.18.30'
+}
+
+group = 'com.killstolevel'
+version = '0.0.1'
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.release.set(11)
+}
+
+tasks.withType(Test).configureEach {
+	// Name every test as it runs — otherwise a green build says nothing about what was covered.
+	testLogging {
+		events 'passed', 'skipped', 'failed'
+		exceptionFormat 'full'
+		showStackTraces = true
+		displayGranularity = 0
+	}
+
+	// ...and close with a one-line tally, so the totals are in the build output itself.
+	afterSuite { desc, result ->
+		if (desc.parent == null) {
+			logger.lifecycle("\nTests: ${result.testCount} total, ${result.successfulTestCount} passed, " +
+				"${result.failedTestCount} failed, ${result.skippedTestCount} skipped (${result.resultType})")
+		}
+	}
+}
+
+tasks.register('pluginTest', Test) {
+	description = 'Runs the plugin-level tests, which mock the client.'
+	group = 'verification'
+	testClassesDirs = sourceSets.pluginTest.output.classesDirs
+	classpath = sourceSets.pluginTest.runtimeClasspath
+}
+
+tasks.named('check') {
+	dependsOn 'pluginTest'
+}
+
+// Render the overlay to PNGs without running the game: ./gradlew overlayShots
+tasks.register('overlayShots', JavaExec) {
+	description = 'Renders the overlay to PNG files using a mocked client.'
+	group = 'documentation'
+	classpath = sourceSets.pluginTest.runtimeClasspath
+	mainClass = 'com.killstolevel.OverlayShots'
+	args layout.buildDirectory.dir('overlay-shots').get().asFile.path
+}
+
+// Launch a dev client with the plugin sideloaded: ./gradlew run
+tasks.register('run', JavaExec) {
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.killstolevel.KillsToLevelPluginTest'
+	// macOS + JDK 9+: RuneLite's OSXFullScreenAdapter touches Apple's com.apple.eawt,
+	// which java.desktop no longer exports to the classpath. Add it or ClientUI.init throws.
+	jvmArgs "-ea", "--add-exports=java.desktop/com.apple.eawt=ALL-UNNAMED"
+	args "--developer-mode", "--debug"
+}

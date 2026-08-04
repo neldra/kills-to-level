@@ -4,7 +4,7 @@
 
 # Kills to Level
 
-**How many kills until your next combat level — measured, not guessed.**
+**How many kills until your next combat skill level — measured, not guessed.**
 
 [![build](https://github.com/neldra/kills-to-level/actions/workflows/build.yml/badge.svg)](https://github.com/neldra/kills-to-level/actions/workflows/build.yml)
 
@@ -59,10 +59,16 @@ Attack, Strength or Defence for melee, alongside Hitpoints; Controlled shows all
 style and the rows follow on your next hit, so the number on screen always belongs to what you're
 training now. The panel clears about 30 seconds after you stop fighting.
 
-A number is **greyed while it's still being confirmed**:
+A row reads **Measuring** until your second kill gives it something to measure:
 
 <p align="center">
-  <img src="assets/overlay-warming-up.png" alt="Overlay reading: Kills to level — Strength 5, Hitpoints 101, both greyed to show they are still being confirmed" width="290">
+  <img src="assets/overlay-measuring.png" alt="Overlay reading: Kills to level — Strength Measuring, Hitpoints Measuring" width="290">
+</p>
+
+A number is **marked `~` and greyed while it's still being confirmed**:
+
+<p align="center">
+  <img src="assets/overlay-warming-up.png" alt="Overlay reading: Kills to level — Strength ~5, Hitpoints ~101, both greyed and marked ~ to show they are still being confirmed" width="290">
 </p>
 
 Grey never means guessed. Two kills give one real interval of XP, and for a fixed monster that
@@ -116,6 +122,11 @@ A few details do most of the work:
   target by then — reading XP at despawn would fold that into the wrong kill.
 - **A kill only feeds the skills it trained.** Each skill averages its own kills, so an hour of
   Aggressive doesn't drag down the Defence number the moment you switch to Defensive.
+- **XP that no amount of your damage could explain is ignored.** Combat XP is paid per point of
+  damage, so when a gain far exceeds what your recent hits could pay — a quest reward, an XP
+  lamp — it isn't priced as a kill. Your progress still counts it; the per-kill average just
+  doesn't get poisoned by it. (On Leagues and Deadman worlds, where XP is multiplied, this check
+  stands down.)
 - **The window is per-session.** Nothing is written to disk, so a stale average from last
   week can never mislead you today.
 

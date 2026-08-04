@@ -37,25 +37,26 @@ public class OverlayRenderTest
 
 		assertEquals("title:Kills to level", lines.get(0));
 		assertTrue("a hit must show the skill it trained, before any kill: " + lines,
-			lines.contains("Strength|—"));
-		assertTrue("a dash, since one kill has not even happened yet: " + lines,
-			lines.stream().noneMatch(l -> l.matches("Strength\\|\\d+")));
+			lines.contains("Strength|Measuring"));
+		assertTrue("and say it is measuring, since one kill has not even happened yet: " + lines,
+			lines.stream().noneMatch(l -> l.matches("Strength\\|~?\\d+")));
 	}
 
 	/**
 	 * Three kills is a real measurement — two would do — but not yet a confident one, so the number
-	 * is shown greyed rather than withheld behind a dash. Waiting for five meant staring at dashes
-	 * for the first minute of every session with no number to act on.
+	 * is shown greyed with a "~" rather than withheld. Waiting for five meant staring at a
+	 * placeholder for the first minute of every session with no number to act on; the prefix is
+	 * there because colour alone is easy to miss.
 	 */
 	@Test
-	public void thinlyMeasuredSkillShowsAGreyedNumber()
+	public void thinlyMeasuredSkillShowsATildedGreyNumber()
 	{
 		SimulatedGame game = new SimulatedGame().kills(3);
 		List<String> lines = game.renderedLines();
 
 		assertEquals("title:Kills to level", lines.get(0));
-		assertTrue("three kills must produce a number, not a dash: " + lines,
-			lines.stream().anyMatch(l -> l.matches("Strength\\|\\d+")));
+		assertTrue("three kills must produce a number, marked ~ while thin: " + lines,
+			lines.stream().anyMatch(l -> l.matches("Strength\\|~\\d+")));
 		assertEquals("and it must be greyed to say it is still being confirmed",
 			Color.LIGHT_GRAY, game.rightColorOf("Strength"));
 	}
@@ -67,6 +68,8 @@ public class OverlayRenderTest
 
 		assertTrue("nine kills is past the confidence threshold: " + game.renderedLines(),
 			game.renderedLines().stream().anyMatch(l -> l.matches("Strength\\|\\d+")));
+		assertTrue("a confident number must not carry the ~: " + game.renderedLines(),
+			game.renderedLines().stream().noneMatch(l -> l.contains("|~")));
 		assertEquals("a confident number must not be greyed",
 			Color.WHITE, game.rightColorOf("Strength"));
 	}

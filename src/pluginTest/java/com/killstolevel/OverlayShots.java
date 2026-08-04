@@ -33,6 +33,7 @@ public final class OverlayShots
 		Path dir = Paths.get(args.length > 0 ? args[0] : "build/overlay-shots");
 		Files.createDirectories(dir);
 
+		write(dir, "00-measuring", new SimulatedGame().hits(1));
 		write(dir, "01-warming-up", new SimulatedGame().kills(3));
 		write(dir, "02-measured", new SimulatedGame().kills(9));
 		write(dir, "03-xp-target", new SimulatedGame()

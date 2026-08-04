@@ -12,9 +12,10 @@ import net.runelite.client.ui.overlay.components.TitleComponent;
 
 /**
  * Shows kills-to-next-level for the combat skill(s) you're actively training. Renders nothing when
- * you're not training combat. A number is greyed until enough kills back it up — it is measured from
- * the second kill onwards either way — and "—" means there is nothing to measure yet, or the kills so
- * far were ambiguous (an AoE barrage whose XP all landed together).
+ * you're not training combat. A number is prefixed "~" and greyed until enough kills back it up —
+ * it is measured from the second kill onwards either way — and "Measuring" means there is
+ * nothing measured yet, or the kills so far were ambiguous (an AoE barrage whose XP all landed
+ * together).
  */
 class KillsToLevelOverlay extends OverlayPanel
 {
@@ -39,13 +40,16 @@ class KillsToLevelOverlay extends OverlayPanel
 			{
 				continue;
 			}
-			int kills = plugin.killsToLevel(skill);
-			String right = kills == KillXpEstimator.UNKNOWN ? "—" : Integer.toString(kills);
-
-			// Grey until the skill has enough kills behind it to trust the number without
-			// qualification. The figure is measured either way, never guessed — grey says "still
+			// "~" and grey until the skill has enough kills behind it to trust the number without
+			// qualification. The figure is measured either way, never guessed — both say "still
 			// confirming this", so a usable answer arrives on the second kill instead of the fifth.
-			Color rightColor = plugin.isConfident(skill) ? Color.WHITE : Color.LIGHT_GRAY;
+			// The prefix exists because colour alone is easy to miss and impossible to describe.
+			int kills = plugin.killsToLevel(skill);
+			boolean confident = plugin.isConfident(skill);
+			String right = kills == KillXpEstimator.UNKNOWN
+				? "Measuring"
+				: (confident ? "" : "~") + kills;
+			Color rightColor = confident ? Color.WHITE : Color.LIGHT_GRAY;
 
 			// Name the target when it's an XP goal, so the number isn't mistaken for the next level.
 			int goal = plugin.goalLevel(skill);

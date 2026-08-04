@@ -43,8 +43,8 @@ import net.runelite.client.ui.overlay.OverlayManager;
 @Slf4j
 @PluginDescriptor(
 	name = "Kills to Level",
-	description = "Shows how many kills until your next combat level, measured from your actual XP per kill.",
-	tags = {"combat", "xp", "kills", "level", "goal", "slayer", "training"}
+	description = "Shows kills remaining until your next combat skill level or XP target, using your actual XP per kill.",
+	tags = {"combat", "xp", "kills", "level", "goal", "slayer", "training", "actions", "remaining", "tracker"}
 )
 public class KillsToLevelPlugin extends Plugin
 {

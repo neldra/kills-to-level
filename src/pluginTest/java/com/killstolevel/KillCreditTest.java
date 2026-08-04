@@ -1,6 +1,7 @@
 package com.killstolevel;
 
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.Map;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
@@ -8,6 +9,7 @@ import net.runelite.api.Hitsplat;
 import net.runelite.api.HitsplatID;
 import net.runelite.api.NPC;
 import net.runelite.api.Skill;
+import net.runelite.api.WorldType;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.HitsplatApplied;
@@ -59,6 +61,7 @@ public class KillCreditTest
 		when(config.useInGameGoal()).thenReturn(true);
 		when(config.showHitpoints()).thenReturn(true);
 		when(client.getVarpValue(anyInt())).thenReturn(0);   // no in-game target set
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
 
 		plugin = new KillsToLevelPlugin();
 		plugin.client = client;
@@ -778,5 +781,162 @@ public class KillCreditTest
 
 		// One credited kill only: a single snapshot can never reach an estimate.
 		assertEquals(KillXpEstimator.UNKNOWN, plugin.killsToLevel(Skill.STRENGTH));
+	}
+
+	/**
+	 * XP that arrives with no damage behind it — a lamp, a quest reward — must not be priced as a
+	 * kill. Without the plausibility bound the 5,020 gain below would enter the mean and the count
+	 * would read 17 instead of 693 until the poisoned sample rolled out of the window.
+	 */
+	@Test
+	public void lampBetweenKillsDoesNotSkewTheEstimate()
+	{
+		when(client.getVarpValue(VarPlayerID.XPDROPS_STRENGTH_END)).thenReturn(20000);
+		tick(2);
+		for (int i = 0; i < 6; i++)
+		{
+			killOne();
+		}
+
+		grant(Skill.STRENGTH, 5000);   // the lamp, landing between fights
+		tick(2);
+		killOne();
+
+		// xp = 1000 + 7x20 + 5000 = 6140, so 13860 remain at a true 20/kill.
+		assertEquals(693, plugin.killsToLevel(Skill.STRENGTH));
+	}
+
+	/**
+	 * Leagues and Deadman worlds multiply combat XP past any fixed plausibility ceiling, so the
+	 * bound stands down there: the lamp scenario above is absorbed the way v1.0 absorbed it, in
+	 * exchange for real multiplied kills never being excised.
+	 */
+	@Test
+	public void boostedWorldStandsTheGuardDown()
+	{
+		when(client.getWorldType()).thenReturn(EnumSet.of(WorldType.SEASONAL));
+		when(client.getVarpValue(VarPlayerID.XPDROPS_STRENGTH_END)).thenReturn(20000);
+		tick(2);
+		for (int i = 0; i < 6; i++)
+		{
+			killOne();
+		}
+
+		grant(Skill.STRENGTH, 5000);
+		tick(2);
+		killOne();
+
+		// The 5,020 gain is accepted: mean (5x20 + 5020) / 6, and 13860 remain.
+		assertEquals(17, plugin.killsToLevel(Skill.STRENGTH));
+	}
+
+	/**
+	 * A credited kill whose XP registers too late feeds no estimator, so the NEXT kill's gain spans
+	 * two kills — and its bound must too. The damage counters are per skill, reset only when that
+	 * skill records, precisely so an unfed kill cannot shrink the bound out from under the gain it
+	 * leaves behind: a single counter reset on every credited kill would bound this 720 at 680.
+	 */
+	@Test
+	public void killWhoseXpArrivesLateDoesNotShrinkTheNextKillsBound()
+	{
+		when(client.getVarpValue(VarPlayerID.XPDROPS_STRENGTH_END)).thenReturn(20000);
+		tick(2);
+		// A monster paying 12 XP per damage — well under the 16 cap, well over half of it.
+		killBigMonster(360);
+		killBigMonster(360);
+
+		// The unfed kill: blow lands, corpse despawns, and only then does the XP register.
+		NPC late = npc();
+		tick();
+		applyHitsplat(late, hitsplat(HitsplatID.DAMAGE_ME, 30));
+		tick(DESPAWN_LAG_TICKS - 1);
+		despawn(late, true);
+		grant(Skill.STRENGTH, 360);
+		tick(2);
+
+		killBigMonster(360);
+
+		// Gains 360 and 720 both accepted: xp = 1000 + 4x360 = 2440, 17560 remain at a mean of 540.
+		assertEquals(33, plugin.killsToLevel(Skill.STRENGTH));
+	}
+
+	private void killBigMonster(int strengthXp)
+	{
+		NPC monster = npc();
+		grant(Skill.STRENGTH, strengthXp);
+		tick();
+		applyHitsplat(monster, hitsplat(HitsplatID.DAMAGE_ME, 30));
+		tick(DESPAWN_LAG_TICKS - 1);
+		despawn(monster, true);
+	}
+
+	/**
+	 * A splash pays Magic's base cast XP with zero damage, so a splash-heavy fight can legitimately
+	 * gain more than any damage-derived bound allows. Each observed splash widens Magic's
+	 * allowance: without that, the 300 gain below would be excised against a bound of 232.
+	 */
+	@Test
+	public void splashesWidenMagicsAllowance()
+	{
+		when(client.getVarpValue(VarPlayerID.XPDROPS_MAGIC_END)).thenReturn(20000);
+		tick(2);
+		// A first magic kill, only to give Magic its baseline.
+		NPC first = npc();
+		grant(Skill.MAGIC, 20);
+		tick();
+		applyHitsplat(first, hitsplat(HitsplatID.DAMAGE_ME, 2));
+		tick(DESPAWN_LAG_TICKS - 1);
+		despawn(first, true);
+
+		// Then a fight of four splashes before the 2-damage killing hit lands.
+		NPC second = npc();
+		for (int i = 0; i < 4; i++)
+		{
+			applyHitsplat(second, hitsplat(HitsplatID.DAMAGE_ME, 0));
+		}
+		grant(Skill.MAGIC, 300);
+		tick();
+		applyHitsplat(second, hitsplat(HitsplatID.DAMAGE_ME, 2));
+		tick(DESPAWN_LAG_TICKS - 1);
+		despawn(second, true);
+
+		// xp = 3000 + 320, so 16680 remain at 300/kill.
+		assertEquals(56, plugin.killsToLevel(Skill.MAGIC));
+	}
+
+	/**
+	 * The config counts kills, the estimator counts gains between them — one fewer. With a mixed
+	 * window the two readings give different means, so this pins the conversion at both the
+	 * construction and the resize call sites.
+	 */
+	@Test
+	public void sampleWindowCountsKillsNotGains()
+	{
+		when(client.getVarpValue(VarPlayerID.XPDROPS_STRENGTH_END)).thenReturn(20000);
+		tick(2);
+		// 3 goblins then 19 bigger monsters: 21 gains, of which a 20-kill window spans the last 19.
+		for (int i = 0; i < 3; i++)
+		{
+			killOne();
+		}
+		for (int i = 0; i < 19; i++)
+		{
+			killOne(25);   // 100 xp each
+		}
+
+		// xp = 1000 + 3x20 + 19x100 = 2960: 17040 remain at 100/kill — a window one too wide
+		// would still hold a 20 and read 178.
+		assertEquals(171, plugin.killsToLevel(Skill.STRENGTH));
+
+		// And shrinking to 5 kills must keep the last 4 gains, not 5.
+		for (int i = 0; i < 4; i++)
+		{
+			killOne(50);   // 200 xp each
+		}
+		when(config.sampleWindow()).thenReturn(5);
+		configChanged(KillsToLevelConfig.GROUP);
+
+		// xp = 3760: 16240 remain at 200/kill — keeping 5 gains would mix a 100 in and read 91.
+		assertEquals(82, plugin.killsToLevel(Skill.STRENGTH));
 	}
 }

@@ -7,6 +7,7 @@ import java.awt.image.BufferedImage;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import net.runelite.api.Client;
@@ -14,9 +15,11 @@ import net.runelite.api.Hitsplat;
 import net.runelite.api.HitsplatID;
 import net.runelite.api.NPC;
 import net.runelite.api.Skill;
+import net.runelite.api.WorldType;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.HitsplatApplied;
 import net.runelite.api.events.NpcDespawned;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.game.NpcUtil;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.ui.overlay.components.LayoutableRenderableEntity;
@@ -47,6 +50,7 @@ final class SimulatedGame
 		when(client.getSkillExperience(any(Skill.class)))
 			.thenAnswer(inv -> xp.getOrDefault(inv.<Skill>getArgument(0), 0));
 		when(client.getVarpValue(anyInt())).thenReturn(0);
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
 		when(config.sampleWindow()).thenReturn(20);
 		when(config.useInGameGoal()).thenReturn(true);
 		when(config.showHitpoints()).thenReturn(true);
@@ -67,6 +71,12 @@ final class SimulatedGame
 	/** Kill goblins: 5 damage each, so 20 Strength XP and ~6 Hitpoints XP per kill. */
 	SimulatedGame kills(int count)
 	{
+		return kills(count, 5, 20);
+	}
+
+	/** Kill monsters dealing {@code damage} a kill and paying {@code strengthXp} for it. */
+	SimulatedGame kills(int count, int damage, int strengthXp)
+	{
 		tick(2);
 		for (int i = 0; i < count; i++)
 		{
@@ -74,18 +84,66 @@ final class SimulatedGame
 			when(npc.getIndex()).thenReturn(++npcIndex);
 			when(npcUtil.isDying(npc)).thenReturn(true);
 
-			xp.merge(Skill.STRENGTH, 20, Integer::sum);
+			xp.merge(Skill.STRENGTH, strengthXp, Integer::sum);
 			xp.merge(Skill.HITPOINTS, 6, Integer::sum);
 
 			HitsplatApplied hit = new HitsplatApplied();
 			hit.setActor(npc);
-			hit.setHitsplat(hitsplat());
+			hit.setHitsplat(hitsplat(damage));
 			plugin.onHitsplatApplied(hit);
 
 			tick(DESPAWN_LAG_TICKS);
 			plugin.onNpcDespawned(new NpcDespawned(npc));
 			tick(1);
 		}
+		return this;
+	}
+
+	/**
+	 * A kill whose XP registers too late for attribution: the corpse despawns and is credited, but
+	 * no estimator is fed. The XP then arrives, to be measured into the NEXT kill's gain.
+	 */
+	SimulatedGame killWithLateXp(int damage, int strengthXp)
+	{
+		tick(2);
+		NPC npc = mock(NPC.class);
+		when(npc.getIndex()).thenReturn(++npcIndex);
+		when(npcUtil.isDying(npc)).thenReturn(true);
+
+		HitsplatApplied hit = new HitsplatApplied();
+		hit.setActor(npc);
+		hit.setHitsplat(hitsplat(damage));
+		plugin.onHitsplatApplied(hit);
+
+		tick(DESPAWN_LAG_TICKS);
+		plugin.onNpcDespawned(new NpcDespawned(npc));
+		xp.merge(Skill.STRENGTH, strengthXp, Integer::sum);
+		tick(2);
+		return this;
+	}
+
+	/** Grant XP with no hitsplat behind it — a lamp, a quest reward — landing between kills. */
+	SimulatedGame lamp(Skill skill, int amount)
+	{
+		xp.merge(skill, amount, Integer::sum);
+		tick(2);
+		return this;
+	}
+
+	/** Move the session onto a Leagues-style world, where XP is multiplied. */
+	SimulatedGame seasonalWorld()
+	{
+		when(client.getWorldType()).thenReturn(EnumSet.of(WorldType.SEASONAL));
+		return this;
+	}
+
+	/** Change the sample window mid-session, as the config panel would. */
+	SimulatedGame sampleWindow(int kills)
+	{
+		when(config.sampleWindow()).thenReturn(kills);
+		ConfigChanged change = new ConfigChanged();
+		change.setGroup(KillsToLevelConfig.GROUP);
+		plugin.onConfigChanged(change);
 		return this;
 	}
 
@@ -109,7 +167,7 @@ final class SimulatedGame
 
 			HitsplatApplied hit = new HitsplatApplied();
 			hit.setActor(npc);
-			hit.setHitsplat(hitsplat());
+			hit.setHitsplat(hitsplat(5));
 			plugin.onHitsplatApplied(hit);
 		}
 		return this;
@@ -129,7 +187,7 @@ final class SimulatedGame
 		}
 	}
 
-	private static Hitsplat hitsplat()
+	private static Hitsplat hitsplat(int amount)
 	{
 		return new Hitsplat()
 		{
@@ -142,7 +200,7 @@ final class SimulatedGame
 			@Override
 			public int getAmount()
 			{
-				return 5;
+				return amount;
 			}
 
 			@Override

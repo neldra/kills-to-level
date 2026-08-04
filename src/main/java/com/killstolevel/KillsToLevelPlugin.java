@@ -16,6 +16,7 @@ import net.runelite.api.GameState;
 import net.runelite.api.Hitsplat;
 import net.runelite.api.NPC;
 import net.runelite.api.Skill;
+import net.runelite.api.WorldType;
 import net.runelite.api.annotations.Varp;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
@@ -36,7 +37,8 @@ import net.runelite.client.ui.overlay.OverlayManager;
  * combat skill, greying a number until enough kills back it up. A kill is counted only when an NPC
  * you dealt damage to actually dies ({@link NpcUtil#isDying}), is priced at the tick of its killing
  * blow — not at despawn, which trails the kill by several ticks — and feeds only the
- * {@link KillXpEstimator} of the skills it actually trained.
+ * {@link KillXpEstimator} of the skills it actually trained. A gain too large for the damage dealt
+ * to plausibly pay — an XP lamp, a quest reward — is excised rather than priced as a kill.
  */
 @Slf4j
 @PluginDescriptor(
@@ -48,7 +50,7 @@ public class KillsToLevelPlugin extends Plugin
 {
 	private static final Set<Skill> COMBAT_SKILLS = EnumSet.of(
 		Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE, Skill.HITPOINTS, Skill.RANGED, Skill.MAGIC);
-	private static final int MIN_SAMPLES = 5;
+	private static final int MIN_SAMPLES = 4;             // measured gains — a number is solid from its 5th kill
 	private static final int ACTIVE_TIMEOUT_TICKS = 50;   // ~30s the panel stays up after you stop training
 	/**
 	 * How far behind the newest style-training tick a skill may be and still count as current. Kept
@@ -58,6 +60,16 @@ public class KillsToLevelPlugin extends Plugin
 	private static final int STYLE_SWITCH_SLACK_TICKS = 2;
 	/** Ticks of cumulative-XP history kept, so a kill can be priced at its killing blow. */
 	private static final int XP_HISTORY_TICKS = 64;
+	/**
+	 * The most XP one point of damage can plausibly pay a skill. The true ceiling is 4 XP per
+	 * damage for a trained skill times the largest per-monster experience multiplier (2.875x, so
+	 * 11.5); 16 leaves margin without letting a lamp-sized gain through.
+	 */
+	private static final long MAX_XP_PER_DAMAGE = 16;
+	/** Slack for rounding and for Magic base-cast XP on hits too small to carry it. */
+	private static final long BASE_XP_ALLOWANCE = 200;
+	/** Extra allowance per observed splash — a splash pays base cast XP with zero damage. */
+	private static final long XP_PER_SPLASH_ALLOWANCE = 60;
 
 	// Package-private so tests can drive the plugin with mocked client state.
 	@Inject Client client;
@@ -73,6 +85,14 @@ public class KillsToLevelPlugin extends Plugin
 	private final Set<Integer> damagedNpcs = new HashSet<>();
 	/** Tick of the most recent hit we landed on each NPC — i.e. its killing blow, once it dies. */
 	private final Map<Integer, Integer> lastHitTick = new HashMap<>();
+	/**
+	 * Damage dealt since each skill's estimator last recorded, bounding what its next gain may
+	 * plausibly be. Per skill because estimators record at different kills: a credited kill that
+	 * trains nothing (a target finished by poison) must not shrink another skill's bound.
+	 */
+	private final Map<Skill, Long> damageSinceRecord = new EnumMap<>(Skill.class);
+	/** Zero-damage hits since Magic last recorded — each one may still have paid base cast XP. */
+	private int splashesSinceMagicRecord;
 	private int tick;
 	private long lastAccountHash = -1;
 
@@ -102,9 +122,13 @@ public class KillsToLevelPlugin extends Plugin
 		estimators.clear();
 		for (Skill s : COMBAT_SKILLS)
 		{
-			estimators.put(s, new KillXpEstimator(config.sampleWindow(), MIN_SAMPLES));
+			// The config counts kills; a window of N kills holds N-1 measurable gains, the first
+			// kill being the baseline. Passing N-1 keeps the averaging exactly as it always was.
+			estimators.put(s, new KillXpEstimator(config.sampleWindow() - 1, MIN_SAMPLES));
 			xpHistory.put(s, new int[XP_HISTORY_TICKS]);
+			damageSinceRecord.put(s, 0L);
 		}
+		splashesSinceMagicRecord = 0;
 	}
 
 	private void reset()
@@ -112,6 +136,8 @@ public class KillsToLevelPlugin extends Plugin
 		lastTrainedTick.clear();
 		damagedNpcs.clear();
 		lastHitTick.clear();
+		damageSinceRecord.replaceAll((s, damage) -> 0L);
+		splashesSinceMagicRecord = 0;
 	}
 
 	/**
@@ -168,7 +194,7 @@ public class KillsToLevelPlugin extends Plugin
 			// Resize in place — changing the window shouldn't throw away kills already measured.
 			for (KillXpEstimator est : estimators.values())
 			{
-				est.resize(config.sampleWindow());
+				est.resize(config.sampleWindow() - 1);
 			}
 		}
 	}
@@ -201,6 +227,16 @@ public class KillsToLevelPlugin extends Plugin
 			damagedNpcs.add(idx);
 			lastHitTick.put(idx, tick);
 
+			int damage = h.getAmount();
+			for (Skill s : COMBAT_SKILLS)
+			{
+				damageSinceRecord.merge(s, (long) damage, Long::sum);
+			}
+			if (damage == 0)
+			{
+				splashesSinceMagicRecord++;
+			}
+
 			// Mark visibility right away rather than waiting for this target to die — a completed
 			// kill still catches it below as a fallback, for the rare case this blow's XP is delayed
 			// past the window.
@@ -226,6 +262,7 @@ public class KillsToLevelPlugin extends Plugin
 			// have damaged the next target — pricing the kill here would fold that XP into this
 			// snapshot. Price it at the killing blow instead, where the XP had just landed.
 			int killTick = hitTick == null ? tick : hitTick;
+			boolean boostedWorld = isBoostedXpWorld();
 			for (Skill s : COMBAT_SKILLS)
 			{
 				// Only feed a skill's estimator on a kill that actually trained it — otherwise a
@@ -234,12 +271,52 @@ public class KillsToLevelPlugin extends Plugin
 				// to training it.
 				if (xpArrivedFor(s, killTick))
 				{
-					estimators.get(s).recordKill(xpAtTick(s, killTick));
+					long bound = boostedWorld ? Long.MAX_VALUE : maxPlausibleGain(s);
+					if (!estimators.get(s).recordKill(xpAtTick(s, killTick), bound))
+					{
+						log.debug("implausible {} gain excised (over {})", s, bound);
+					}
+					damageSinceRecord.put(s, 0L);
+					if (s == Skill.MAGIC)
+					{
+						splashesSinceMagicRecord = 0;
+					}
 					lastTrainedTick.put(s, tick);
 				}
 			}
 			log.debug("kill priced at tick {}", killTick);
 		}
+	}
+
+	/**
+	 * The most XP this skill could have gained through combat since its estimator last recorded:
+	 * damage-driven, plus a flat allowance for rounding and for Magic's base cast XP — paid even on
+	 * a splash, so each observed zero-damage hit widens Magic's allowance. Combat XP is paid per
+	 * point of damage, so a gain far beyond this is foreign XP — a lamp, a quest reward — that
+	 * would otherwise be priced as one enormous kill and skew the estimate until it rolled out of
+	 * the window.
+	 */
+	private long maxPlausibleGain(Skill skill)
+	{
+		long allowance = BASE_XP_ALLOWANCE;
+		if (skill == Skill.MAGIC)
+		{
+			allowance += XP_PER_SPLASH_ALLOWANCE * splashesSinceMagicRecord;
+		}
+		return MAX_XP_PER_DAMAGE * damageSinceRecord.get(skill) + allowance;
+	}
+
+	/**
+	 * Seasonal game modes (Leagues, Deadman) multiply combat XP well past any fixed plausibility
+	 * ceiling, by amounts that change mid-session — so the guard stands down there rather than
+	 * excising every real kill. The measurement itself is multiplier-proof; only lamp protection
+	 * is lost.
+	 */
+	private boolean isBoostedXpWorld()
+	{
+		EnumSet<WorldType> types = client.getWorldType();
+		return types.contains(WorldType.SEASONAL) || types.contains(WorldType.DEADMAN)
+			|| types.contains(WorldType.TOURNAMENT_WORLD) || types.contains(WorldType.BETA_WORLD);
 	}
 
 	@Subscribe

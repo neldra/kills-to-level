@@ -41,7 +41,8 @@ git push origin main --tags
 gh release create v1.1 --title "1.1" --notes "..."
 
 # 4. this is the sha the hub needs
-git rev-parse v1.1
+git rev-parse v1.1^{commit}   # ^{commit} matters: on an annotated tag, plain rev-parse
+                              # returns the tag object, not the commit the hub needs
 ```
 
 ## Submitting to the hub
